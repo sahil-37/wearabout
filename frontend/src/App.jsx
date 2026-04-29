@@ -62,10 +62,10 @@ export default function App() {
         <div className="max-w-7xl mx-auto px-6 h-14 flex items-center justify-between">
           <div className="flex items-center gap-2.5">
             <div className="w-6 h-6 rounded-md bg-white flex items-center justify-center text-black text-xs font-bold shrink-0">
-              B
+              W
             </div>
             <span className="text-sm font-semibold text-white/90 tracking-tight">
-              Buy Me That Look
+              Wearabout
             </span>
           </div>
 

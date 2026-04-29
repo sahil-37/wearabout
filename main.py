@@ -35,7 +35,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(
-    title="Buy Me That Look - Fashion Recommendation API",
+    title="Wearabout - Fashion Recommendation API",
     description="AI-powered fashion recommendation system using computer vision",
     version="1.0.0",
     docs_url="/api/docs",
@@ -77,7 +77,7 @@ async def product_image(path: str = Query(...)):
 @app.get("/", tags=["Root"], include_in_schema=False)
 async def root():
     return {
-        "message": "Fashion Recommendation API - Buy Me That Look",
+        "message": "Wearabout",
         "version": "1.0.0",
         "docs": "/api/docs",
         "health": "/api/v1/health",

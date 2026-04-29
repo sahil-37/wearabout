@@ -42,7 +42,7 @@ FEATURES_PATH  = DATA_DIR / "features_normalized.pkl"
 METADATA_PATH  = DATA_DIR / "metadata.json"
 BASELINE_FILE  = DATA_DIR / "baseline_metrics.json"
 
-EXPERIMENT_NAME = "buy-me-that-look"
+EXPERIMENT_NAME = "wearabout"
 K_VALUES        = [5, 10, 20]
 
 

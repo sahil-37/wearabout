@@ -1,4 +1,4 @@
-# Buy Me That Look
+# Wearabout
 
 AI-powered fashion recommendation system — upload an outfit photo and get shoppable product matches from a 994-item Myntra catalog.
 
@@ -50,7 +50,7 @@ Ranked recommendations with brand, price, and Myntra buy link
 ```bash
 # 1 — clone
 git clone <repo-url>
-cd buy_me_that_look_api
+cd wearabout_api
 
 # 2 — Python environment
 python3.11 -m venv venv
