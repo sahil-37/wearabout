@@ -11,6 +11,7 @@ import numpy as np
 
 from app.config import settings
 from app.models import FeatureExtractor, ObjectDetector, PoseEstimation
+from app.models.fashion_gate import FashionGate
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ YOLO_TO_CATEGORY = {
 class RecommendationEngine:
 
     def __init__(self):
+        self.fashion_gate     = FashionGate()
         self.pose_estimator   = PoseEstimation()
         self.feature_extractor = FeatureExtractor()
         self.object_detector  = None
@@ -116,6 +118,14 @@ class RecommendationEngine:
         self._ensure_loaded()
         top_k = top_k or settings.MAX_RECOMMENDATIONS
 
+        # 0 — fashion gate (fast binary classifier, skips pipeline if not fashion)
+        is_fashion, gate_confidence = self.fashion_gate.check(img_path)
+        if not is_fashion:
+            return {
+                "success": False,
+                "error":   f"Image does not appear to contain clothing or an outfit (confidence: {gate_confidence:.0%}). Please upload a fashion photo."
+            }
+
         # 1 — detect clothing items first (primary gate)
         detections = []
         using_mock = False
@@ -185,6 +195,14 @@ class RecommendationEngine:
     ) -> Dict:
         self._ensure_loaded()
         top_k = top_k or settings.MAX_RECOMMENDATIONS
+
+        # gate check
+        is_fashion, confidence = self.fashion_gate.check(img_path)
+        if not is_fashion:
+            return {
+                "success": False,
+                "error":   f"Image does not appear to contain clothing (confidence: {confidence:.0%})."
+            }
 
         query_vec = self.feature_extractor.extract_features(img_path)
         if query_vec is None:

@@ -74,3 +74,6 @@ roboflow_dataset.zip
 
 # Data versions
 data/versions/
+data/classifier/
+data/coco_val2017/
+models/fashion_gate.pth

@@ -151,6 +151,17 @@ frontend-build:
 
 # ── MLOps ─────────────────────────────────────────────────────────────────────
 
+# ── Classifier ─────────────────────────────────────────────────────────────────
+
+collect-data:
+	python scripts/collect_not_fashion.py
+
+train-classifier:
+	python scripts/train_classifier.py
+
+train-classifier-quick:
+	python scripts/train_classifier.py --epochs 5 --batch-size 16
+
 build-catalog:
 	KMP_DUPLICATE_LIB_OK=TRUE python scripts/build_catalog.py
 
