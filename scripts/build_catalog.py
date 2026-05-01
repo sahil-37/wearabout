@@ -21,13 +21,23 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 # ── paths ──────────────────────────────────────────────────────────────────────
-LIBRARY_ROOT   = Path("/Users/sahil/Desktop/AI Ebooks/Buy Me That Look")
-PRODUCT_DIR    = LIBRARY_ROOT / "Product"
-RAW_META       = PRODUCT_DIR / "metadata.json"
+import sys
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.config import settings as _settings
 
-API_ROOT       = Path(__file__).resolve().parent.parent
-DATA_DIR       = API_ROOT / "data"
+API_ROOT    = Path(__file__).resolve().parent.parent
+DATA_DIR    = API_ROOT / "data"
 DATA_DIR.mkdir(exist_ok=True)
+
+PRODUCT_DIR = Path(_settings.CATALOG_IMAGE_ROOT) if _settings.CATALOG_IMAGE_ROOT else None
+RAW_META    = PRODUCT_DIR / "metadata.json" if PRODUCT_DIR else None
+
+if not PRODUCT_DIR or not PRODUCT_DIR.exists():
+    logger.error(
+        "CATALOG_IMAGE_ROOT not set or does not exist. "
+        "Set it in your .env file: CATALOG_IMAGE_ROOT=/path/to/Product"
+    )
+    raise SystemExit(1)
 
 OUT_META       = DATA_DIR / "metadata.json"
 OUT_FEATURES   = DATA_DIR / "features_normalized.pkl"

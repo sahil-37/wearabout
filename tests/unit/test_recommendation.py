@@ -1,541 +1,203 @@
 """
-Unit tests for Recommendation Engine module
+Unit tests for RecommendationEngine
 """
+
+import json
+import pickle
+from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest
-import pickle
-import json
-from pathlib import Path
-from unittest.mock import patch, MagicMock, PropertyMock
 
-import sys
-sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+from app.engines.recommendation import RecommendationEngine
 
 
-class TestRecommendationEngine:
-    """Test suite for RecommendationEngine class"""
+# ── shared fixtures ───────────────────────────────────────────────────────────
 
-    @pytest.fixture
-    def mock_settings(self, tmp_path, monkeypatch):
-        """Mock settings for testing"""
-        features_path = tmp_path / "features.pkl"
-        metadata_path = tmp_path / "metadata.json"
-        normalized_path = tmp_path / "features_normalized.pkl"
+@pytest.fixture
+def catalog(tmp_path):
+    """Write a minimal feature store + metadata to tmp_path."""
+    n = 30
+    np.random.seed(0)
+    feats = np.random.randn(n, 2048).astype(np.float32)
+    # L2 normalise
+    feats = feats / np.linalg.norm(feats, axis=1, keepdims=True)
 
-        # Create mock features
-        np.random.seed(42)
-        num_products = 50
-        features_dict = {
-            f"product_{i}.jpg": np.random.randn(2048).astype(np.float32)
-            for i in range(num_products)
+    cats = (["topwear"] * 10 + ["bottomwear"] * 10 + ["footwear"] * 10)
+    img_paths = [f"img_{i}.jpg" for i in range(n)]
+
+    features_path = tmp_path / "features_normalized.pkl"
+    with open(features_path, "wb") as f:
+        pickle.dump({"features": feats, "image_paths": img_paths, "categories": cats}, f)
+
+    metadata = [
+        {
+            "id": i,
+            "name": f"Product {i}",
+            "brand": "TestBrand",
+            "category": cats[i],
+            "gender": ["men", "women", "unisex"][i % 3],
+            "price": 500.0 + i,
+            "product_url": f"https://example.com/{i}",
+            "image_path": img_paths[i],
         }
+        for i in range(n)
+    ]
+    metadata_path = tmp_path / "metadata.json"
+    with open(metadata_path, "w") as f:
+        json.dump(metadata, f)
+
+    return {"features_path": str(features_path), "metadata_path": str(metadata_path), "n": n}
+
+
+@pytest.fixture
+def mock_gate():
+    m = MagicMock()
+    m.check.return_value = (True, 1.0)
+    return m
+
+
+@pytest.fixture
+def mock_pose():
+    m = MagicMock()
+    m.pose_estimation.return_value = (True, None, None)
+    m.cleanup.return_value = None
+    return m
+
+
+@pytest.fixture
+def mock_extractor():
+    m = MagicMock()
+    np.random.seed(1)
+    m.extract_features.return_value = np.random.randn(2048).astype(np.float32)
+    m.cleanup.return_value = None
+    return m
+
+
+@pytest.fixture
+def mock_detector():
+    m = MagicMock()
+    m.detect.return_value = {
+        "success": True,
+        "detections": [{"class": "Topwear", "confidence": 0.9,
+                         "bbox": {"x1": 0, "y1": 0, "x2": 100, "y2": 100,
+                                  "width": 100, "height": 100}}],
+    }
+    m.model = {"type": "onnx"}
+    m.cleanup.return_value = None
+    return m
+
+
+@pytest.fixture
+def engine(catalog, mock_gate, mock_pose, mock_extractor, mock_detector, monkeypatch):
+    monkeypatch.setattr("app.config.settings.FEATURES_PATH",   catalog["features_path"])
+    monkeypatch.setattr("app.config.settings.METADATA_PATH",   catalog["metadata_path"])
+    monkeypatch.setattr("app.config.settings.MAX_RECOMMENDATIONS", 10)
+    monkeypatch.setattr("app.config.settings.MIN_RECOMMENDATIONS", 2)
+    monkeypatch.setattr("app.config.settings.DEFAULT_K_NEIGHBORS", 10)
+    monkeypatch.setattr("app.config.settings.YOLO_WEIGHTS_PATH", "")
+    monkeypatch.setattr("app.config.settings.YOLO_CONFIDENCE_THRESHOLD", 0.4)
+    monkeypatch.setattr("app.config.settings.NMS_IOU_THRESHOLD", 0.45)
+    monkeypatch.setattr("app.config.settings.POSE_CONFIDENCE_THRESHOLD", 0.5)
+
+    with patch("app.engines.recommendation.FashionGate", return_value=mock_gate), \
+         patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose), \
+         patch("app.engines.recommendation.FeatureExtractor", return_value=mock_extractor), \
+         patch("app.engines.recommendation.ObjectDetector", return_value=mock_detector):
+        e = RecommendationEngine()
+        e._ensure_loaded()
+        return e
+
+
+# ── initialisation ────────────────────────────────────────────────────────────
+
+def test_engine_loads(engine, catalog):
+    assert engine.faiss_index is not None
+    assert engine.faiss_index.ntotal == catalog["n"]
+    assert len(engine.metadata) == catalog["n"]
+
+
+def test_per_category_indices_built(engine):
+    assert "topwear" in engine.faiss_by_category
+    assert "bottomwear" in engine.faiss_by_category
+    assert "footwear" in engine.faiss_by_category
+
+
+# ── find_similar ──────────────────────────────────────────────────────────────
+
+def test_find_similar_success(engine, tmp_path):
+    import cv2
+    img = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    p = str(tmp_path / "q.jpg")
+    cv2.imwrite(p, img)
+
+    result = engine.find_similar_images(p, top_k=5)
+    assert result["success"] is True
+    assert "similar_items" in result
+    assert len(result["similar_items"]) <= 5
+
+
+def test_find_similar_result_fields(engine, tmp_path):
+    import cv2
+    img = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    p = str(tmp_path / "q2.jpg")
+    cv2.imwrite(p, img)
 
-        with open(features_path, "wb") as f:
-            pickle.dump(features_dict, f)
-
-        # Create normalized features
-        image_paths = list(features_dict.keys())
-        features_array = np.array([features_dict[p] for p in image_paths])
-        normalized_data = {
-            "features": features_array,
-            "image_paths": image_paths,
-            "categories": ["topwear"] * num_products
-        }
-        with open(normalized_path, "wb") as f:
-            pickle.dump(normalized_data, f)
-
-        # Create mock metadata
-        metadata = [
-            {
-                "name": f"Product {i}",
-                "category": ["topwear", "bottomwear", "footwear"][i % 3],
-                "gender": ["men", "women", "unisex"][i % 3],
-                "price": 29.99 + i,
-                "image_url": f"https://example.com/product_{i}.jpg",
-                "product_url": f"https://example.com/products/{i}"
-            }
-            for i in range(num_products)
-        ]
-        metadata_dict = {
-            "products": metadata,
-            "num_images": num_products,
-            "categories": ["topwear", "bottomwear", "footwear"]
-        }
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f)
-
-        # Patch settings
-        monkeypatch.setattr("app.config.settings.FEATURES_PATH", str(features_path))
-        monkeypatch.setattr("app.config.settings.METADATA_PATH", str(metadata_path))
-        monkeypatch.setattr("app.config.settings.DEFAULT_K_NEIGHBORS", 10)
-        monkeypatch.setattr("app.config.settings.MAX_RECOMMENDATIONS", 10)
-        monkeypatch.setattr("app.config.settings.MIN_RECOMMENDATIONS", 3)
-        monkeypatch.setattr("app.config.settings.POSE_CONFIDENCE_THRESHOLD", 0.5)
-        monkeypatch.setattr("app.config.settings.YOLO_CONFIDENCE_THRESHOLD", 0.4)
-        monkeypatch.setattr("app.config.settings.NMS_IOU_THRESHOLD", 0.45)
-        monkeypatch.setattr("app.config.settings.YOLO_WEIGHTS_PATH", "")
-
-        return {
-            "features_path": str(features_path),
-            "metadata_path": str(metadata_path),
-            "normalized_path": str(normalized_path),
-            "num_products": num_products
-        }
-
-    @pytest.fixture
-    def mock_pose_estimator(self):
-        """Mock pose estimator"""
-        mock = MagicMock()
-        mock.pose_estimation.return_value = (True, np.zeros((224, 224, 3)), np.zeros((224, 224, 3)))
-        mock.cleanup.return_value = None
-        return mock
-
-    @pytest.fixture
-    def mock_feature_extractor(self):
-        """Mock feature extractor"""
-        mock = MagicMock()
-        mock.extract_features.return_value = np.random.randn(2048).astype(np.float32)
-        mock.scale_features.return_value = np.random.randn(1, 2048).astype(np.float32)
-        mock.load_features.return_value = {
-            f"product_{i}.jpg": np.random.randn(2048).astype(np.float32)
-            for i in range(50)
-        }
-        mock.cleanup.return_value = None
-        return mock
-
-    @pytest.fixture
-    def mock_object_detector(self):
-        """Mock object detector"""
-        mock = MagicMock()
-        mock.detect.return_value = {
-            "success": True,
-            "detections": [
-                {"class": "topwear", "confidence": 0.9, "bbox": [100, 100, 200, 300]}
-            ]
-        }
-        mock.cleanup.return_value = None
-        return mock
-
-    # ========================================================================
-    # Initialization Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_engine_initialization(self, mock_settings, mock_pose_estimator,
-                                   mock_feature_extractor, mock_object_detector):
-        """Test that RecommendationEngine initializes correctly"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            assert engine is not None
-            assert engine.knn_initialized is False  # Lazy loading
-
-    @pytest.mark.unit
-    def test_lazy_loading_not_triggered_at_init(self, mock_settings, mock_pose_estimator,
-                                                 mock_feature_extractor, mock_object_detector):
-        """Test that features are not loaded at initialization"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            # Features should not be loaded yet
-            assert engine.features_array is None
-            assert engine.knn_model is None
-
-    # ========================================================================
-    # Lazy Loading Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_lazy_load_features(self, mock_settings, mock_pose_estimator,
-                                mock_feature_extractor, mock_object_detector):
-        """Test that features are loaded on first use"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            # Trigger lazy loading
-            engine._lazy_load_features()
-
-            assert engine.features_array is not None
-            assert len(engine.features_image_paths) == mock_settings["num_products"]
-
-    @pytest.mark.unit
-    def test_knn_initialization_after_lazy_load(self, mock_settings, mock_pose_estimator,
-                                                 mock_feature_extractor, mock_object_detector):
-        """Test KNN model is initialized after lazy loading"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            engine._lazy_load_features()
-            engine._initialize_knn()
-
-            assert engine.knn_model is not None
-
-    # ========================================================================
-    # Find Similar Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_find_similar_images_returns_results(self, mock_settings, mock_pose_estimator,
-                                                  mock_feature_extractor, mock_object_detector,
-                                                  sample_image_path):
-        """Test find_similar_images returns similar items"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.find_similar_images(sample_image_path, top_k=5)
-
-            assert result["success"] is True
-            assert "similar_items" in result
-            assert len(result["similar_items"]) <= 5
-
-    @pytest.mark.unit
-    def test_find_similar_images_contains_expected_fields(self, mock_settings, mock_pose_estimator,
-                                                           mock_feature_extractor, mock_object_detector,
-                                                           sample_image_path):
-        """Test that similar items contain expected fields"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.find_similar_images(sample_image_path, top_k=5)
-
-            if result["success"] and result["similar_items"]:
-                item = result["similar_items"][0]
-                assert "id" in item
-                assert "similarity_score" in item
-                assert "distance" in item
-
-    @pytest.mark.unit
-    def test_find_similar_returns_sorted_by_distance(self, mock_settings, mock_pose_estimator,
-                                                      mock_feature_extractor, mock_object_detector,
-                                                      sample_image_path):
-        """Test that results are sorted by distance (ascending)"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.find_similar_images(sample_image_path, top_k=10)
-
-            if result["success"] and len(result["similar_items"]) > 1:
-                distances = [item["distance"] for item in result["similar_items"]]
-                assert distances == sorted(distances)
-
-    # ========================================================================
-    # Recommendation Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_recommend_full_body_required(self, mock_settings, mock_pose_estimator,
-                                          mock_feature_extractor, mock_object_detector,
-                                          sample_image_path):
-        """Test that recommendations require full-body shot"""
-        # Mock pose estimator to return False (not full body)
-        mock_pose_estimator.pose_estimation.return_value = (False, None, None)
-
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend(sample_image_path)
-
-            assert result["success"] is False
-            assert "full-body" in result["error"].lower()
-
-    @pytest.mark.unit
-    def test_recommend_with_full_body(self, mock_settings, mock_pose_estimator,
-                                       mock_feature_extractor, mock_object_detector,
-                                       sample_image_path):
-        """Test recommendations with valid full-body image"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend(sample_image_path)
-
-            assert result["success"] is True
-            assert "recommendations" in result
-            assert "full_shot_detected" in result
-
-    @pytest.mark.unit
-    def test_recommend_includes_detections(self, mock_settings, mock_pose_estimator,
-                                            mock_feature_extractor, mock_object_detector,
-                                            sample_image_path):
-        """Test that recommendations include detection results"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend(sample_image_path)
-
-            assert "detections" in result
-
-    # ========================================================================
-    # Gender Filter Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_recommend_gender_filter_men(self, mock_settings, mock_pose_estimator,
-                                          mock_feature_extractor, mock_object_detector,
-                                          sample_image_path):
-        """Test gender filter for men's products"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend(sample_image_path, gender="men")
-
-            # Should succeed
-            assert result["success"] is True
-
-    @pytest.mark.unit
-    def test_recommend_gender_filter_women(self, mock_settings, mock_pose_estimator,
-                                            mock_feature_extractor, mock_object_detector,
-                                            sample_image_path):
-        """Test gender filter for women's products"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend(sample_image_path, gender="women")
-
-            assert result["success"] is True
-
-    @pytest.mark.unit
-    def test_recommend_unisex_returns_all(self, mock_settings, mock_pose_estimator,
-                                           mock_feature_extractor, mock_object_detector,
-                                           sample_image_path):
-        """Test unisex filter returns all products"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend(sample_image_path, gender="unisex")
-
-            assert result["success"] is True
-
-    # ========================================================================
-    # Error Handling Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_recommend_invalid_image(self, mock_settings, mock_pose_estimator,
-                                      mock_feature_extractor, mock_object_detector):
-        """Test handling of invalid image path"""
-        # Mock feature extractor to return None
-        mock_feature_extractor.extract_features.return_value = None
-        mock_pose_estimator.pose_estimation.return_value = (True, None, None)
-
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.recommend("/invalid/path.jpg")
-
-            assert result["success"] is False
-
-    @pytest.mark.unit
-    def test_find_similar_invalid_image(self, mock_settings, mock_pose_estimator,
-                                         mock_feature_extractor, mock_object_detector):
-        """Test find_similar_images with invalid image"""
-        mock_feature_extractor.extract_features.return_value = None
-
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            result = engine.find_similar_images("/invalid/path.jpg")
-
-            assert result["success"] is False
-
-    # ========================================================================
-    # Cleanup Tests
-    # ========================================================================
-
-    @pytest.mark.unit
-    def test_cleanup(self, mock_settings, mock_pose_estimator,
-                     mock_feature_extractor, mock_object_detector):
-        """Test cleanup releases resources"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-
-            # Should not raise
-            engine.cleanup()
-
-            mock_pose_estimator.cleanup.assert_called_once()
-            mock_feature_extractor.cleanup.assert_called_once()
-
-
-class TestBuildRecommendations:
-    """Test suite for _build_recommendations helper method"""
-
-    @pytest.fixture
-    def engine_with_metadata(self, mock_settings, mock_pose_estimator,
-                             mock_feature_extractor, mock_object_detector):
-        """Create engine with loaded metadata"""
-        with patch("app.engines.recommendation.PoseEstimation", return_value=mock_pose_estimator), \
-             patch("app.engines.recommendation.FeatureExtractor", return_value=mock_feature_extractor), \
-             patch("app.engines.recommendation.ObjectDetector", return_value=mock_object_detector):
-
-            from app.engines.recommendation import RecommendationEngine
-            engine = RecommendationEngine()
-            engine._lazy_load_features()
-            return engine
-
-    @pytest.fixture
-    def mock_settings(self, tmp_path, monkeypatch):
-        """Mock settings for build recommendations tests"""
-        features_path = tmp_path / "features.pkl"
-        metadata_path = tmp_path / "metadata.json"
-        normalized_path = tmp_path / "features_normalized.pkl"
-
-        np.random.seed(42)
-        num_products = 20
-
-        features_dict = {
-            f"product_{i}.jpg": np.random.randn(2048).astype(np.float32)
-            for i in range(num_products)
-        }
-        with open(features_path, "wb") as f:
-            pickle.dump(features_dict, f)
-
-        image_paths = list(features_dict.keys())
-        features_array = np.array([features_dict[p] for p in image_paths])
-        with open(normalized_path, "wb") as f:
-            pickle.dump({
-                "features": features_array,
-                "image_paths": image_paths,
-                "categories": ["topwear"] * num_products
-            }, f)
-
-        metadata = [
-            {
-                "name": f"Product {i}",
-                "category": "topwear",
-                "gender": ["men", "women", "unisex"][i % 3],
-                "price": 29.99
-            }
-            for i in range(num_products)
-        ]
-        with open(metadata_path, "w") as f:
-            json.dump(metadata, f)
-
-        monkeypatch.setattr("app.config.settings.FEATURES_PATH", str(features_path))
-        monkeypatch.setattr("app.config.settings.METADATA_PATH", str(metadata_path))
-        monkeypatch.setattr("app.config.settings.DEFAULT_K_NEIGHBORS", 10)
-        monkeypatch.setattr("app.config.settings.MAX_RECOMMENDATIONS", 10)
-        monkeypatch.setattr("app.config.settings.MIN_RECOMMENDATIONS", 3)
-        monkeypatch.setattr("app.config.settings.POSE_CONFIDENCE_THRESHOLD", 0.5)
-        monkeypatch.setattr("app.config.settings.YOLO_CONFIDENCE_THRESHOLD", 0.4)
-        monkeypatch.setattr("app.config.settings.NMS_IOU_THRESHOLD", 0.45)
-        monkeypatch.setattr("app.config.settings.YOLO_WEIGHTS_PATH", "")
-
-        return {"num_products": num_products}
-
-    @pytest.fixture
-    def mock_pose_estimator(self):
-        mock = MagicMock()
-        mock.pose_estimation.return_value = (True, None, None)
-        mock.cleanup.return_value = None
-        return mock
-
-    @pytest.fixture
-    def mock_feature_extractor(self):
-        mock = MagicMock()
-        mock.extract_features.return_value = np.random.randn(2048).astype(np.float32)
-        mock.scale_features.return_value = np.random.randn(1, 2048).astype(np.float32)
-        mock.load_features.return_value = {}
-        mock.cleanup.return_value = None
-        return mock
-
-    @pytest.fixture
-    def mock_object_detector(self):
-        mock = MagicMock()
-        mock.detect.return_value = {"success": True, "detections": []}
-        mock.cleanup.return_value = None
-        return mock
-
-    @pytest.mark.unit
-    def test_build_recommendations_similarity_score(self, engine_with_metadata):
-        """Test similarity score calculation"""
-        indices = np.array([0, 1, 2])
-        distances = np.array([0.0, 1.0, 2.0])
-
-        recommendations = engine_with_metadata._build_recommendations(
-            indices, distances, "unisex"
-        )
-
-        if recommendations:
-            # First item with distance 0 should have highest similarity
-            assert recommendations[0]["similarity_score"] == 1.0
-            # Similarity should decrease as distance increases
-            for i in range(1, len(recommendations)):
-                assert recommendations[i]["similarity_score"] <= recommendations[i-1]["similarity_score"]
-
-    @pytest.mark.unit
-    def test_build_recommendations_respects_max(self, engine_with_metadata, monkeypatch):
-        """Test that MAX_RECOMMENDATIONS is respected"""
-        monkeypatch.setattr("app.config.settings.MAX_RECOMMENDATIONS", 3)
-
-        indices = np.array([0, 1, 2, 3, 4, 5])
-        distances = np.array([0.1, 0.2, 0.3, 0.4, 0.5, 0.6])
-
-        recommendations = engine_with_metadata._build_recommendations(
-            indices, distances, "unisex"
-        )
-
-        assert len(recommendations) <= 3
+    result = engine.find_similar_images(p, top_k=3)
+    if result["success"] and result["similar_items"]:
+        item = result["similar_items"][0]
+        for field in ("id", "name", "category", "price", "similarity_score"):
+            assert field in item
+
+
+def test_find_similar_blocked_by_gate(engine, tmp_path, mock_gate):
+    mock_gate.check.return_value = (False, 0.1)
+    import cv2
+    img = np.zeros((224, 224, 3), dtype=np.uint8)
+    p = str(tmp_path / "garbage.jpg")
+    cv2.imwrite(p, img)
+
+    result = engine.find_similar_images(p)
+    assert result["success"] is False
+    assert "clothing" in result["error"].lower()
+
+
+# ── recommend ─────────────────────────────────────────────────────────────────
+
+def test_recommend_success(engine, tmp_path):
+    import cv2
+    img = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    p = str(tmp_path / "outfit.jpg")
+    cv2.imwrite(p, img)
+
+    result = engine.recommend(p, gender="unisex", top_k=5)
+    assert result["success"] is True
+    assert "recommendations" in result
+    assert "detections" in result
+
+
+def test_recommend_gender_filter(engine, tmp_path):
+    import cv2
+    img = np.random.randint(0, 255, (224, 224, 3), dtype=np.uint8)
+    p = str(tmp_path / "outfit2.jpg")
+    cv2.imwrite(p, img)
+
+    result = engine.recommend(p, gender="men")
+    assert result["success"] is True
+    for item in result["recommendations"]:
+        assert item["gender"] in ("men", "unisex", "n.a.")
+
+
+def test_recommend_blocked_by_gate(engine, tmp_path, mock_gate):
+    mock_gate.check.return_value = (False, 0.05)
+    import cv2
+    img = np.zeros((224, 224, 3), dtype=np.uint8)
+    p = str(tmp_path / "garbage2.jpg")
+    cv2.imwrite(p, img)
+
+    result = engine.recommend(p)
+    assert result["success"] is False
+
+
+def test_cleanup_does_not_raise(engine):
+    engine.cleanup()

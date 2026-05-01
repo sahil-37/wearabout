@@ -34,11 +34,16 @@ import numpy as np
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
 
-ANNOTATED_IMAGES = Path("/Users/sahil/Desktop/AI Ebooks/Buy Me That Look/Annotated_Data/images/train")
-ANNOTATED_LABELS = Path("/Users/sahil/Desktop/AI Ebooks/Buy Me That Look/Annotated_Data/labels/train")
-# also include the original 10-image val set
-EXTRA_VAL_IMAGES = Path("/Users/sahil/Desktop/AI Ebooks/Buy Me That Look/Annotated_Data/images/val")
-EXTRA_VAL_LABELS = Path("/Users/sahil/Desktop/AI Ebooks/Buy Me That Look/Annotated_Data/labels/val")
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from app.config import settings as _settings
+
+_ANNOTATED_ROOT  = Path(_settings.ANNOTATED_DATA_ROOT) if _settings.ANNOTATED_DATA_ROOT else None
+
+ANNOTATED_IMAGES = _ANNOTATED_ROOT / "images/train" if _ANNOTATED_ROOT else Path(".")
+ANNOTATED_LABELS = _ANNOTATED_ROOT / "labels/train" if _ANNOTATED_ROOT else Path(".")
+EXTRA_VAL_IMAGES = _ANNOTATED_ROOT / "images/val"   if _ANNOTATED_ROOT else Path(".")
+EXTRA_VAL_LABELS = _ANNOTATED_ROOT / "labels/val"   if _ANNOTATED_ROOT else Path(".")
 
 API_ROOT     = Path(__file__).resolve().parent.parent
 FEATURES_PKL = API_ROOT / "data" / "features_normalized.pkl"

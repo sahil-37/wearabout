@@ -48,18 +48,15 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "./uploads")
 
     # Model Paths
-    YOLO_WEIGHTS_PATH: str = os.getenv(
-        "YOLO_WEIGHTS_PATH",
-        "./models/yolov5_fashion.pt"
-    )
-    FEATURES_PATH: str = os.getenv(
-        "FEATURES_PATH",
-        "./data/features.pkl"
-    )
-    METADATA_PATH: str = os.getenv(
-        "METADATA_PATH",
-        "./data/metadata.json"
-    )
+    YOLO_WEIGHTS_PATH: str = "./models/best.onnx"
+    FEATURES_PATH: str = "./data/features_normalized.pkl"
+    METADATA_PATH: str = "./data/metadata.json"
+
+    # Catalog image root — used by /product-image endpoint and build_catalog.py
+    CATALOG_IMAGE_ROOT: str = ""
+
+    # Annotated data root — used by evaluate.py
+    ANNOTATED_DATA_ROOT: str = ""
 
     # Logging
     LOG_LEVEL: str = "INFO"

@@ -22,7 +22,7 @@ from app.utils.logger import setup_logger
 
 logger = setup_logger(__name__)
 
-CATALOG_ROOT = Path("/Users/sahil/Desktop/AI Ebooks/Buy Me That Look/Product")
+CATALOG_ROOT = Path(settings.CATALOG_IMAGE_ROOT) if settings.CATALOG_IMAGE_ROOT else None
 
 
 @asynccontextmanager
@@ -69,7 +69,7 @@ async def product_image(path: str = Query(...)):
     p = Path(path).resolve()
     if not p.exists() or not p.is_file():
         raise HTTPException(status_code=404, detail="Image not found")
-    if not str(p).startswith(str(CATALOG_ROOT)):
+    if CATALOG_ROOT and not str(p).startswith(str(CATALOG_ROOT.resolve())):
         raise HTTPException(status_code=403, detail="Forbidden")
     return FileResponse(p)
 
